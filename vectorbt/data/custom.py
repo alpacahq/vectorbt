@@ -757,3 +757,138 @@ class CCXTData(Data):
         download_kwargs['show_progress'] = False
         kwargs = merge_dicts(download_kwargs, kwargs)
         return self.download_symbol(symbol, **kwargs)
+
+class AlpacaData(Data):
+    """`Data` for data coming from `python-binance`.
+
+    ## Example
+
+    Fetch the 1-minute data of the last 4 hours, wait 1 minute, and update:
+
+    ```python-repl
+    >>> import vectorbt as vbt
+
+    >>> alpaca_data = vbt.AlpacaData.download(
+    ...     "AAPL",
+    ...     start='4 hours ago UTC',
+    ...     end='15 minutes ago UTC',
+    ...     interval='1m'
+    ... )
+    >>> alpaca_data.get()
+                                    Open    High     Low   Close  Volume
+    timestamp                                                        
+    2021-12-23 09:00:00+00:00  175.70  176.11  175.65  176.00    8035
+    2021-12-23 09:15:00+00:00  176.00  176.00  175.84  175.97    4823
+    2021-12-23 09:30:00+00:00  175.94  176.07  175.85  176.05    8686
+    2021-12-23 09:45:00+00:00  176.05  176.06  175.96  176.02    6115
+    2021-12-23 10:00:00+00:00  176.08  176.10  176.04  176.10    4964
+    ...                           ...     ...     ...     ...     ...
+    2021-12-23 23:45:00+00:00  176.03  176.03  176.00  176.02   12417
+    2021-12-24 00:00:00+00:00  176.03  176.06  176.02  176.06   10168
+    2021-12-24 00:15:00+00:00  176.06  176.10  175.85  176.09   29246
+    2021-12-24 00:30:00+00:00  176.09  176.12  176.09  176.09   14670
+    2021-12-24 00:45:00+00:00  176.11  176.50  176.10  176.32   45286
+
+    [64 rows x 5 columns]
+    >>> import time
+    >>> time.sleep(60)
+
+    >>> alpaca_data = alpaca_data.update()
+    >>> alpaca_data.get()
+
+
+    ```"""
+
+    @classmethod
+    def download_symbol(cls,
+                        symbol: str,
+                        timeframe: str = '1d',
+                        start: tp.DatetimeLike = 0,
+                        end: tp.DatetimeLike = 'now UTC',
+                        adjustment: str = 'all',
+                        limit: int = 500,
+                        **kwargs) -> tp.Frame:
+        """Download the symbol.
+
+        Args:
+            symbol (str): Symbol.
+            timeframe (str): Timeframe of data. Must be integer multiple of 'm' (minute), 'h' (hour) or 'd' (day). i.e. '15m' 
+                Note: Data from the latest 15 minutes is not available with a free data plan.
+                See: https://alpaca.markets/data
+
+            start (any): Start datetime.
+
+                See `vectorbt.utils.datetime_.to_tzaware_datetime`.
+            end (any): End datetime.
+
+                See `vectorbt.utils.datetime_.to_tzaware_datetime`.
+            adjustment (str): Specifies the corporate action adjustment for the stocks. 
+                Enum: `raw`, `split`, `dividend` or `all`.
+            limit (int): The maximum number of returned items.
+
+        For defaults, see `data.alpaca` in `vectorbt._settings.settings`.
+        """
+        from alpaca_trade_api.rest import TimeFrameUnit, TimeFrame, REST
+        _timeframe_units = {'d': TimeFrameUnit.Day, 'h': TimeFrameUnit.Hour, 'm': TimeFrameUnit.Minute}
+
+        if len(timeframe) < 2:
+            raise ValueError("invalid timeframe")
+            
+        amount_str = timeframe[:-1]
+        unit_str = timeframe[-1]
+
+        if not amount_str.isnumeric() or unit_str not in _timeframe_units:
+            raise ValueError("invalid timeframe")
+        
+        amount = int(amount_str)
+        unit = _timeframe_units[unit_str]
+
+        _timeframe = TimeFrame(amount, unit)
+
+        start_ts = to_tzaware_datetime(start, tz=get_utc_tz()).isoformat()
+        end_ts = to_tzaware_datetime(end, tz=get_utc_tz()).isoformat()
+
+        from vectorbt._settings import settings
+        alpaca_cfg = settings['data']['alpaca']
+        
+        client_kwargs = dict()
+        for k in get_func_kwargs(REST):
+            if k in kwargs:
+                client_kwargs[k] = kwargs.pop(k)
+
+        client_kwargs = merge_dicts(alpaca_cfg, client_kwargs)
+        
+        client = REST(**client_kwargs)
+
+        df = client.get_bars(symbol=symbol, 
+                             timeframe=_timeframe,
+                             start=start_ts,
+                             end=end_ts,
+                             adjustment=adjustment, 
+                             limit=limit).df
+        # filter for OHLCV
+        # remove extra columns
+        df.drop(['trade_count', 'vwap'], axis=1, errors='ignore', inplace=True)
+
+        # capitalize
+        df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+
+        df['Open'] = df['Open'].astype(float)
+        df['High'] = df['High'].astype(float)
+        df['Low'] = df['Low'].astype(float)
+        df['Close'] = df['Close'].astype(float)
+        df['Volume'] = df['Volume'].astype(float)
+
+        return df
+
+
+
+    def update_symbol(self, symbol: str, **kwargs) -> tp.Frame:
+        """Update the symbol.
+
+        `**kwargs` will override keyword arguments passed to `AlpacaData.download_symbol`."""
+        download_kwargs = self.select_symbol_kwargs(symbol, self.download_kwargs)
+        download_kwargs['start'] = self.data[symbol].index[-1]
+        download_kwargs['show_progress'] = False
+        kwargs = merge_dicts(download_kwargs, kwargs)
+        return self.download_symbol(symbol, **kwargs)
